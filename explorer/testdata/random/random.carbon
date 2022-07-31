@@ -10,20 +10,16 @@
 // CHECK: result: 0
 
 package ExplorerTest api;
-
-// TODO: Implement this with some kind of reflection?
-external impl {.x: i32, .y: i32} as EqWith(Self) {
-  fn Equal[me: Self](other: Self) -> Bool {
-    return me.x == other.x and me.y == other.y;
-  }
+fn test(para: i32)->Bool{
+  return true;
 }
-
 fn Main() -> i32 {
-  var t1: {.x: i32, .y: i32} = {.x = 5, .y = 2};
-  var t2: {.x: i32, .y: i32} = {.x = 5, .y = 2};
-  if (t1 == t2) {
-    return 0;
-  } else {
-    return 1;
+  var i : i32 = Rand(0,100);
+  var j : i32 = Rand(0,100);
+  if(i == j){
+    Print("HALLO WELT");
+  }else{
+    Print("Nice!");
   }
+  return 0;
 }
