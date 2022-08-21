@@ -123,10 +123,10 @@ class Interpreter {
   // Instantiate a type by replacing all type variables that occur inside the
   // type by the current values of those variables.
   //
-  // For example, suppose T=i32 and U=Bool. Then
+  // For example, suppose T=i32 and U=bool. Then
   //     __Fn (Point(T)) -> Point(U)
   // becomes
-  //     __Fn (Point(i32)) -> Point(Bool)
+  //     __Fn (Point(i32)) -> Point(bool)
   auto InstantiateType(Nonnull<const Value*> type, SourceLocation source_loc)
       -> ErrorOr<Nonnull<const Value*>>;
 
@@ -209,12 +209,22 @@ auto Interpreter::EvalPrim(Operator op, Nonnull<const Value*> static_type,
       return heap_.Read(cast<PointerValue>(*args[0]).address(), source_loc);
     case Operator::AddressOf:
       return arena_->New<PointerValue>(cast<LValue>(*args[0]).address());
-    case Operator::Combine:
+    case Operator::BitwiseAnd:
+      // If & wasn't rewritten, it's being used to form a constraint.
       return &cast<TypeOfConstraintType>(static_type)->constraint_type();
     case Operator::As:
     case Operator::Eq:
-      CARBON_FATAL() << "These operators should have been rewritten to "
-                        "interface method calls";
+    case Operator::Less:
+    case Operator::LessEq:
+    case Operator::Greater:
+    case Operator::GreaterEq:
+    case Operator::BitwiseOr:
+    case Operator::BitwiseXor:
+    case Operator::BitShiftLeft:
+    case Operator::BitShiftRight:
+    case Operator::Complement:
+      CARBON_FATAL() << "operator " << ToString(op)
+                     << " should always be rewritten";
   }
 }
 
@@ -1166,19 +1176,9 @@ auto Interpreter::StepExp() -> ErrorOr<Success> {
             std::make_unique<ExpressionAction>(&intrinsic.args()));
       }
       // { {n :: C, E, F} :: S, H} -> { {n' :: C, E, F} :: S, H}
+      const auto& args = cast<TupleValue>(*act.results()[0]).elements();
       switch (cast<IntrinsicExpression>(exp).intrinsic()) {
-        case IntrinsicExpression::Intrinsic::Rand: {
-          const auto& args = cast<TupleValue>(*act.results()[0]).elements();
-          CARBON_CHECK(args.size() == 2);
-
-          const auto& low = cast<IntValue>(*args[0]).value();
-          const auto& high = cast<IntValue>(*args[1]).value();
-          std::uniform_int_distribution<> distr(low, high);
-          int r = distr(generator);
-          return todo_.FinishAction(arena_->New<IntValue>(r));
-        }
         case IntrinsicExpression::Intrinsic::Print: {
-          const auto& args = cast<TupleValue>(*act.results()[0]).elements();
           CARBON_ASSIGN_OR_RETURN(
               Nonnull<const Value*> format_string_value,
               Convert(args[0], arena_->New<StringType>(), exp.source_loc()));
@@ -1200,19 +1200,26 @@ auto Interpreter::StepExp() -> ErrorOr<Success> {
           return todo_.FinishAction(TupleValue::Empty());
         }
         case IntrinsicExpression::Intrinsic::Alloc: {
-          const auto& args = cast<TupleValue>(*act.results()[0]);
-          CARBON_CHECK(args.elements().size() == 1);
-          Address addr(heap_.AllocateValue(args.elements()[0]));
+          CARBON_CHECK(args.size() == 1);
+          Address addr(heap_.AllocateValue(args[0]));
           return todo_.FinishAction(arena_->New<PointerValue>(addr));
         }
         case IntrinsicExpression::Intrinsic::Dealloc: {
-          const auto& args = cast<TupleValue>(*act.results()[0]);
-          CARBON_CHECK(args.elements().size() == 1);
-          heap_.Deallocate(cast<PointerValue>(args.elements()[0])->address());
+          CARBON_CHECK(args.size() == 1);
+          heap_.Deallocate(cast<PointerValue>(args[0])->address());
           return todo_.FinishAction(TupleValue::Empty());
         }
+        case IntrinsicExpression::Intrinsic::Rand: {
+          CARBON_CHECK(args.size() == 2);
+          const auto& low = cast<IntValue>(*args[0]).value();
+          const auto& high = cast<IntValue>(*args[1]).value();
+          CARBON_CHECK(high > low);
+          // We avoid using std::uniform_int_distribution because it's not
+          // reproducible across builds/platforms.
+          int r = (generator() % (high - low)) + low;
+          return todo_.FinishAction(arena_->New<IntValue>(r));
+        }
         case IntrinsicExpression::Intrinsic::IntEq: {
-          const auto& args = cast<TupleValue>(*act.results()[0]).elements();
           CARBON_CHECK(args.size() == 2);
           auto lhs = cast<IntValue>(*args[0]).value();
           auto rhs = cast<IntValue>(*args[1]).value();
@@ -1220,12 +1227,78 @@ auto Interpreter::StepExp() -> ErrorOr<Success> {
           return todo_.FinishAction(result);
         }
         case IntrinsicExpression::Intrinsic::StrEq: {
-          const auto& args = cast<TupleValue>(*act.results()[0]).elements();
           CARBON_CHECK(args.size() == 2);
           auto& lhs = cast<StringValue>(*args[0]).value();
           auto& rhs = cast<StringValue>(*args[1]).value();
           auto result = arena_->New<BoolValue>(lhs == rhs);
           return todo_.FinishAction(result);
+        }
+        case IntrinsicExpression::Intrinsic::IntCompare: {
+          CARBON_CHECK(args.size() == 2);
+          auto lhs = cast<IntValue>(*args[0]).value();
+          auto rhs = cast<IntValue>(*args[1]).value();
+          if (lhs < rhs) {
+            auto result = arena_->New<IntValue>(-1);
+            return todo_.FinishAction(result);
+          }
+          if (lhs == rhs) {
+            auto result = arena_->New<IntValue>(0);
+            return todo_.FinishAction(result);
+          }
+          auto result = arena_->New<IntValue>(1);
+          return todo_.FinishAction(result);
+        }
+        case IntrinsicExpression::Intrinsic::StrCompare: {
+          CARBON_CHECK(args.size() == 2);
+          auto& lhs = cast<StringValue>(*args[0]).value();
+          auto& rhs = cast<StringValue>(*args[1]).value();
+          if (lhs < rhs) {
+            auto result = arena_->New<IntValue>(-1);
+            return todo_.FinishAction(result);
+          }
+          if (lhs == rhs) {
+            auto result = arena_->New<IntValue>(0);
+            return todo_.FinishAction(result);
+          }
+          auto result = arena_->New<IntValue>(1);
+          return todo_.FinishAction(result);
+        }
+        case IntrinsicExpression::Intrinsic::IntBitComplement: {
+          CARBON_CHECK(args.size() == 1);
+          return todo_.FinishAction(
+              arena_->New<IntValue>(~cast<IntValue>(*args[0]).value()));
+        }
+        case IntrinsicExpression::Intrinsic::IntBitAnd: {
+          CARBON_CHECK(args.size() == 2);
+          return todo_.FinishAction(
+              arena_->New<IntValue>(cast<IntValue>(*args[0]).value() &
+                                    cast<IntValue>(*args[1]).value()));
+        }
+        case IntrinsicExpression::Intrinsic::IntBitOr: {
+          CARBON_CHECK(args.size() == 2);
+          return todo_.FinishAction(
+              arena_->New<IntValue>(cast<IntValue>(*args[0]).value() |
+                                    cast<IntValue>(*args[1]).value()));
+        }
+        case IntrinsicExpression::Intrinsic::IntBitXor: {
+          CARBON_CHECK(args.size() == 2);
+          return todo_.FinishAction(
+              arena_->New<IntValue>(cast<IntValue>(*args[0]).value() ^
+                                    cast<IntValue>(*args[1]).value()));
+        }
+        case IntrinsicExpression::Intrinsic::IntLeftShift: {
+          CARBON_CHECK(args.size() == 2);
+          // TODO: Runtime error if RHS is too large.
+          return todo_.FinishAction(arena_->New<IntValue>(
+              static_cast<uint32_t>(cast<IntValue>(*args[0]).value())
+              << cast<IntValue>(*args[1]).value()));
+        }
+        case IntrinsicExpression::Intrinsic::IntRightShift: {
+          CARBON_CHECK(args.size() == 2);
+          // TODO: Runtime error if RHS is too large.
+          return todo_.FinishAction(
+              arena_->New<IntValue>(cast<IntValue>(*args[0]).value() >>
+                                    cast<IntValue>(*args[1]).value()));
         }
       }
     }
@@ -1432,7 +1505,78 @@ auto Interpreter::StepStmt() -> ErrorOr<Success> {
         }
       }
     }
+    case StatementKind::For: {
+      constexpr int TargetVarPosInResult = 0;
+      constexpr int CurrentIndexPosInResult = 1;
+      constexpr int EndIndexPosInResult = 2;
+      constexpr int LoopVarPosInResult = 3;
+      if (act.pos() == 0) {
+        return todo_.Spawn(
+            std::make_unique<ExpressionAction>(&cast<For>(stmt).loop_target()));
+      }
+      if (act.pos() == 1) {
+        Nonnull<const TupleValue*> source_array =
+            cast<const TupleValue>(act.results()[TargetVarPosInResult]);
+
+        auto end_index = static_cast<int>(source_array->elements().size());
+        if (end_index == 0) {
+          return todo_.FinishAction();
+        }
+        act.AddResult(arena_->New<IntValue>(0));
+        act.AddResult(arena_->New<IntValue>(end_index));
+        return todo_.Spawn(std::make_unique<PatternAction>(
+            &cast<For>(stmt).variable_declaration()));
+      }
+      if (act.pos() == 2) {
+        Nonnull<const BindingPlaceholderValue*> loop_var =
+            cast<const BindingPlaceholderValue>(
+                act.results()[LoopVarPosInResult]);
+        Nonnull<const TupleValue*> source_array =
+            cast<const TupleValue>(act.results()[TargetVarPosInResult]);
+
+        auto start_index =
+            cast<IntValue>(act.results()[CurrentIndexPosInResult])->value();
+        todo_.Initialize(*(loop_var->value_node()),
+                         source_array->elements()[start_index]);
+        act.ReplaceResult(CurrentIndexPosInResult,
+                          arena_->New<IntValue>(start_index + 1));
+        return todo_.Spawn(
+            std::make_unique<StatementAction>(&cast<For>(stmt).body()));
+      }
+      if (act.pos() >= 3) {
+        auto current_index =
+            cast<IntValue>(act.results()[CurrentIndexPosInResult])->value();
+        auto end_index =
+            cast<IntValue>(act.results()[EndIndexPosInResult])->value();
+
+        if (current_index < end_index) {
+          Nonnull<const TupleValue*> source_array =
+              cast<const TupleValue>(act.results()[TargetVarPosInResult]);
+          Nonnull<const BindingPlaceholderValue*> loop_var =
+              cast<const BindingPlaceholderValue>(
+                  act.results()[LoopVarPosInResult]);
+
+          CARBON_ASSIGN_OR_RETURN(
+              Nonnull<const Value*> assigned_array_element,
+              todo_.ValueOfNode(*(loop_var->value_node()), stmt.source_loc()));
+
+          auto lvalue = cast<LValue>(assigned_array_element);
+          CARBON_RETURN_IF_ERROR(heap_.Write(
+              lvalue->address(), source_array->elements()[current_index],
+              stmt.source_loc()));
+
+          act.ReplaceResult(CurrentIndexPosInResult,
+                            arena_->New<IntValue>(current_index + 1));
+          return todo_.Spawn(
+              std::make_unique<StatementAction>(&cast<For>(stmt).body()));
+        }
+      }
+      return todo_.FinishAction();
+    }
     case StatementKind::While:
+      // TODO: Rewrite While to use ReplaceResult to store condition result.
+      //       This will remove the inconsistency between the while and for
+      //       loops.
       if (act.pos() % 2 == 0) {
         //    { { (while (e) s) :: C, E, F} :: S, H}
         // -> { { e :: (while ([]) s) :: C, E, F} :: S, H}
@@ -1576,7 +1720,8 @@ auto Interpreter::StepStmt() -> ErrorOr<Success> {
         return todo_.FinishAction();
       }
     case StatementKind::ReturnVar: {
-      const ValueNodeView& value_node = cast<ReturnVar>(stmt).value_node();
+      const auto& ret_var = cast<ReturnVar>(stmt);
+      const ValueNodeView& value_node = ret_var.value_node();
       if (trace_stream_) {
         **trace_stream_ << "--- step returned var "
                         << cast<BindingPattern>(value_node.base()).name()
@@ -1587,8 +1732,7 @@ auto Interpreter::StepStmt() -> ErrorOr<Success> {
                               todo_.ValueOfNode(value_node, stmt.source_loc()));
       if (const auto* lvalue = dyn_cast<LValue>(value)) {
         CARBON_ASSIGN_OR_RETURN(
-            value,
-            heap_.Read(lvalue->address(), value_node.base().source_loc()));
+            value, heap_.Read(lvalue->address(), ret_var.source_loc()));
       }
       const FunctionDeclaration& function = cast<Return>(stmt).function();
       CARBON_ASSIGN_OR_RETURN(
