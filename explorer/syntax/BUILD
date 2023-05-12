@@ -2,10 +2,7 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-package(default_visibility = [
-    "//explorer:__pkg__",
-    "//explorer/fuzzing:__pkg__",
-])
+package(default_visibility = ["//explorer/parse_and_execute:__pkg__"])
 
 cc_library(
     name = "bison_wrap",
@@ -71,8 +68,13 @@ cc_library(
     copts = [
         "-Wno-implicit-fallthrough",  # Needed to make yyinput() code compile.
         "-Wno-unneeded-internal-declaration",
+        "-Wno-unused-but-set-variable",
         "-Wno-unused-function",
         "-Wno-writable-strings",
+    ],
+    visibility = [
+        "//explorer/fuzzing:__pkg__",
+        "//explorer/parse_and_execute:__pkg__",
     ],
     deps = [
         ":bison_wrap",
@@ -81,8 +83,8 @@ cc_library(
         "//common:ostream",
         "//common:string_helpers",
         "//explorer/ast",
+        "//explorer/ast:expression_category",
         "//explorer/ast:paren_contents",
-        "//explorer/ast:value_category",
         "//explorer/common:arena",
         "//explorer/common:error_builders",
         "//explorer/common:nonnull",

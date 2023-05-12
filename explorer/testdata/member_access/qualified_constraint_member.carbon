@@ -2,16 +2,14 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// RUN: %{explorer} %s 2>&1 | \
-// RUN:   %{FileCheck} --match-full-lines --allow-unused-prefixes=false %s
-// RUN: %{explorer} --parser_debug --trace_file=- %s 2>&1 | \
-// RUN:   %{FileCheck} --match-full-lines --allow-unused-prefixes %s
-// AUTOUPDATE: %{explorer} %s
-// CHECK: result: 12
+// AUTOUPDATE
+// RUN: %{explorer-run}
+// RUN: %{explorer-run-trace}
+// CHECK:STDOUT: result: 12
 
 package Foo api;
 interface A {
-  fn F[me: Self]() -> i32;
+  fn F[self: Self]() -> i32;
 }
 interface B {
   fn G(o: Self) -> i32;
@@ -19,7 +17,7 @@ interface B {
 alias C = A & B;
 class X {
   impl as A {
-    fn F[me: Self]() -> i32 { return 10 * me.n; }
+    fn F[self: Self]() -> i32 { return 10 * self.n; }
   }
   impl as B {
     fn G(o: Self) -> i32 { return o.n; }
